@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
 #
-# smart-kernel-manager.sh
-# Ubuntu 22.04 için "akıllı kernel script"
+# smart-kernel-manager-v3.sh
 #
-#   ✔ 6.5 kernel yüklü ve aktifse → 6.8 kernel'leri tamamen siler.
-#   ✔ Default kernel 6.8 ise → 6.5 kurar, default yapar.
-#   ✔ 6.5 kurulu değilse → kurar.
-#   ✔ Kernel parametre optimizasyonları ekler (PSR/ASPM/RCU)
-#   ✔ Reboot sonrası tekrar çalıştırıldığında otomatik temizlik yapar.
-#
-#  NVIDIA'ya dokunmaz. Sadece kernel yönetir.
+# FINAL VERSION — İsmail için özel
+# Kernel 6.5'i default yapar, GRUB_DEFAULT=saved düzeltmesi yapar,
+# reboot sonrası 6.8 kernel'i otomatik siler.
 #
 
 set -euo pipefail
@@ -31,7 +26,7 @@ OPT_PARAMS=(
 )
 
 echo "====================================================="
-echo " Smart Kernel Manager"
+echo " Smart Kernel Manager v3"
 echo " Target kernel: ${TARGET_KERNEL}"
 echo "====================================================="
 
@@ -41,36 +36,56 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 ACTIVE_KERNEL=$(uname -r)
-
 echo ">>> Aktif kernel: ${ACTIVE_KERNEL}"
 
 # -----------------------------------------------------------
-# 1) Eğer aktif kernel zaten 6.5 ise → 6.8 kernel'leri sil
+# GRUB_DEFAULT = saved fix
+# -----------------------------------------------------------
+echo ">>> GRUB_DEFAULT=saved kontrol ediliyor..."
+
+if grep -q '^GRUB_DEFAULT=0' "$GRUB_FILE"; then
+    echo ">>> GRUB_DEFAULT=0 bulundu → düzeltiliyor..."
+    sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' "$GRUB_FILE"
+else
+    # GRUB_DEFAULT=saved yoksa yine ekleyelim
+    if ! grep -q '^GRUB_DEFAULT=saved' "$GRUB_FILE"; then
+        echo ">>> GRUB_DEFAULT=saved ekleniyor..."
+        sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' "$GRUB_FILE" || \
+        echo 'GRUB_DEFAULT=saved' >> "$GRUB_FILE"
+    else
+        echo ">>> GRUB_DEFAULT zaten saved."
+    fi
+fi
+
+# -----------------------------------------------------------
+# Eğer aktif kernel 6.5 ise → 6.8 kernel’leri sil
 # -----------------------------------------------------------
 if [[ "$ACTIVE_KERNEL" == "$TARGET_KERNEL" ]]; then
-    echo ">>> 6.5 kernel zaten aktif — şimdi sistemdeki 6.8 kernel paketleri kaldırılıyor..."
+    echo ">>> 6.5 kernel aktif — 6.8 kernel paketleri temizleniyor..."
 
     REMOVE_LIST=$(dpkg -l | grep 'linux-image-6.8' | awk '{print $2}' || true)
 
     if [[ -z "$REMOVE_LIST" ]]; then
-        echo ">>> Silinecek 6.8 kernel bulunamadı. İşlem tamam."
-        exit 0
+        echo ">>> 6.8 kernel bulunamadı. İşlem tamam."
+    else
+        echo ">>> Silinecek paketler:"
+        echo "$REMOVE_LIST" | sed 's/^/  - /'
+
+        apt purge -y $REMOVE_LIST || true
+        apt autoremove -y || true
+
+        echo ">>> 6.8 kernel tamamen silindi."
     fi
 
-    echo ">>> Kaldırılacak paketler:"
-    echo "$REMOVE_LIST" | sed 's/^/  - /'
-
-    apt purge -y $REMOVE_LIST || true
-    apt autoremove -y || true
-
-    echo ">>> 6.8 kernel tamamen silindi."
+    # GRUB fix sonrası update-grub yap
+    update-grub
     exit 0
 fi
 
 # -----------------------------------------------------------
-# 2) 6.5 kurulu mu kontrol et — değilse kur
+# 6.5 aktif değilse → kurulacak
 # -----------------------------------------------------------
-echo ">>> 6.5 kernel aktif değil — şimdi kurulacak veya yeniden kurulacak."
+echo ">>> 6.5 kernel kuruluyor / yenileniyor..."
 
 apt update -y
 
@@ -79,15 +94,14 @@ for pkg in "${KERNEL_PACKAGES[@]}"; do
         echo ">>> Installing: $pkg"
         apt install --reinstall -y "$pkg"
     else
-        echo ">>> Paket bulunamadı, atlandı: $pkg"
+        echo ">>> Paket bulunamadı, atlanıyor: $pkg"
     fi
 done
 
-echo ">>> initramfs güncelleniyor..."
 update-initramfs -u -k "${TARGET_KERNEL}"
 
 # -----------------------------------------------------------
-# 3) Kernel parametre optimizasyonları
+# Kernel optimizasyon parametreleri
 # -----------------------------------------------------------
 echo ">>> Kernel optimizasyon parametreleri ekleniyor..."
 
@@ -105,23 +119,24 @@ done
 sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"${CURRENT}\"|" "$GRUB_FILE"
 
 # -----------------------------------------------------------
-# 4) GRUB default entry olarak 6.5 kernel'i seç
+# GRUB default kernel ayarı
 # -----------------------------------------------------------
-echo ">>> GRUB default kernel ayarlanıyor..."
+echo ">>> GRUB default kernel ayarlanıyor (saved_entry sistemi ile)..."
 
 TARGET_ENTRY="Advanced options for Ubuntu>Ubuntu, with Linux ${TARGET_KERNEL}"
 grub-set-default "${TARGET_ENTRY}" || {
-    echo "UYARI: grub-set-default başarısız olabilir. Menü isimleri değişmiş olabilir."
+    echo "UYARI: grub-set-default hata verdi. Menü isimleri değişmiş olabilir."
 }
 
 update-grub
 
 echo ""
 echo "====================================================="
-echo " Kernel 6.5 kurulumu tamamlandı!"
-echo " Şimdi reboot et:"
-echo "   sudo reboot"
+echo "  Kernel 6.5 kurulumu tamamlandı!"
 echo ""
-echo " Reboot sonrası tekrar bu script'i çalıştırırsan:"
-echo "   → 6.8 kernel otomatik olarak silinecek."
+echo "  Şimdi sistemi yeniden başlatın:"
+echo "     sudo reboot"
+echo ""
+echo "  Reboot sonrası tekrar bu script'i çalıştırırsan:"
+echo "     → 6.8 kernel otomatik olarak silinir."
 echo "====================================================="
