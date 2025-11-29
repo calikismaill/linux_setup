@@ -2,7 +2,7 @@
 #
 # smart-kernel-manager-v3.sh
 #
-# FINAL VERSION — İsmail için özel
+# FINAL VERSION
 # Kernel 6.5'i default yapar, GRUB_DEFAULT=saved düzeltmesi yapar,
 # reboot sonrası 6.8 kernel'i otomatik siler.
 #
