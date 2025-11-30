@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 #
-# nvidia-manager.sh
-# Dell G15 5530 + Ubuntu/Xubuntu 22.04 için NVIDIA 535 tam otomatik kurulum scripti
+# nvidia-manager.sh (Dell G15 5530 FINAL VERSION)
 #
-# Özellikler:
-#   ✔ NVIDIA 535 sürücüsünü kurar
-#   ✔ nvidia-dkms kurulumu
-#   ✔ nouveau tamamen disable edilir
-#   ✔ PRIME (on-demand / performance) optimize edilir
-#   ✔ NVIDIA modülleri için initramfs günceller
-#   ✔ NVIDIA paketlerini apt-mark hold ile sabitler
+# ✔ nouveau disable → reboot zorunluluğu
+# ✔ reboot sonrası otomatik NVIDIA kurulumu
+# ✔ nouveau açıkken kurulum İZİN YOK
+# ✔ prime-select on-demand/performance
+# ✔ NVIDIA paketleri hold edilir
 #
 # Kullanım:
-#   sudo bash nvidia-manager.sh --install
-#   sudo bash nvidia-manager.sh --remove
+#   sudo bash nvidia-manager.sh --prepare      (nouveau disable + reboot)
+#   sudo bash nvidia-manager.sh --install      (reboot sonrası NVIDIA kurulum)
+#   sudo bash nvidia-manager.sh --remove       (tam temizleme)
 #   sudo bash nvidia-manager.sh --performance
 #   sudo bash nvidia-manager.sh --on-demand
 #
 
 set -euo pipefail
 
+PREPARE=false
 INSTALL=false
 REMOVE=false
 SET_PERFORMANCE=false
@@ -30,141 +29,126 @@ cat <<EOF
 Usage: sudo bash $0 [options]
 
 Options:
-  --install         NVIDIA 535 sürücüsünü kur
-  --remove          NVIDIA sürücülerini kaldır (nouveau geri açılır)
-  --performance     NVIDIA PRIME Performance mode aktif et
-  --on-demand       PRIME On-Demand moda geçir (önerilen)
-  -h, --help        Bu yardım metnini göster
+  --prepare        nouveau disable + initramfs update (REBOOT REQUIRED)
+  --install        Reboot sonrası NVIDIA 535 sürücüsünü kur
+  --remove         NVIDIA sürücülerini kaldır
+  --performance    PRIME Performance mode
+  --on-demand      PRIME On-Demand mode
+  -h, --help       Bu yardım metnini göster
 
-Örnek:
-  sudo bash $0 --install
-  sudo bash $0 --performance
+Kurulum akışı:
+  1) sudo bash $0 --prepare
+  2) reboot
+  3) sudo bash $0 --install
 EOF
 }
 
-# ---------------------------------------------------
-# Argüman işle
-# ---------------------------------------------------
-if [[ $# -eq 0 ]]; then
-    usage
-    exit 0
-fi
+# Parse args
+[[ $# -eq 0 ]] && { usage; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --prepare) PREPARE=true; shift ;;
     --install) INSTALL=true; shift ;;
     --remove) REMOVE=true; shift ;;
     --performance) SET_PERFORMANCE=true; shift ;;
     --on-demand) SET_ONDEMAND=true; shift ;;
     -h|--help) usage; exit 0 ;;
-    *)
-      echo "Bilinmeyen argüman: $1"
-      usage
-      exit 1
-      ;;
+    *) echo "Bilinmeyen argüman: $1"; exit 1 ;;
   esac
 done
 
-# ---------------------------------------------------
-# Root kontrol
-# ---------------------------------------------------
-if [[ $EUID -ne 0 ]]; then
-    echo "HATA: Script'i sudo ile çalıştırmalısın."
-    exit 1
-fi
+# Root check
+[[ $EUID -ne 0 ]] && { echo "HATA: sudo ile çalıştır."; exit 1; }
 
-# ---------------------------------------------------
-# Bellek
-# ---------------------------------------------------
+# NVIDIA paket listesi
 NVIDIA_PACKAGES=(
-    "nvidia-driver-535"
-    "nvidia-dkms-535"
-    "nvidia-prime"
-    "libnvidia-gl-535"
+  "nvidia-driver-535"
+  "nvidia-dkms-535"
+  "nvidia-prime"
+  "libnvidia-gl-535"
 )
 
-# ---------------------------------------------------
-# Nouveau blacklist
-# ---------------------------------------------------
+# Detect nouveau
+nouveau_active() {
+    lsmod | grep -q "^nouveau" && return 0 || return 1
+}
+
+# Disable nouveau
 disable_nouveau() {
-    echo ">>> nouveau sürücüsü disable ediliyor..."
+    echo ">>> nouveau disable ediliyor..."
     mkdir -p /etc/modprobe.d
     cat <<EOF >/etc/modprobe.d/blacklist-nouveau.conf
 blacklist nouveau
 options nouveau modeset=0
 EOF
     update-initramfs -u
+    echo ">>> nouveau disable edildi."
 }
 
+# Enable nouveau
 enable_nouveau() {
-    echo ">>> nouveau yeniden etkinleştiriliyor..."
+    echo ">>> nouveau yeniden aktif ediliyor..."
     rm -f /etc/modprobe.d/blacklist-nouveau.conf || true
     update-initramfs -u
+    echo ">>> nouveau aktifleştirildi. Reboot gerekebilir."
 }
 
-# ---------------------------------------------------
-# NVIDIA yükle
-# ---------------------------------------------------
+# INSTALL NVIDIA DRIVER
 install_nvidia() {
-    echo "=========================================="
-    echo "     NVIDIA 535 KURULUMU BAŞLIYOR"
-    echo "=========================================="
 
-    disable_nouveau
+    if nouveau_active; then
+        echo "======================================================="
+        echo " HATA: nouveau RAM’de aktif!"
+        echo " Lütfen önce '--prepare' çalıştırıp reboot edin."
+        echo "======================================================="
+        exit 1
+    fi
 
+    echo ">>> NVIDIA 535 kuruluyor..."
     apt update -y
     apt install -y "${NVIDIA_PACKAGES[@]}"
 
-    echo ">>> DKMS modülleri derleniyor..."
+    echo ">>> DKMS derleniyor..."
     dkms autoinstall || true
 
     echo ">>> initramfs güncelleniyor..."
     update-initramfs -u
 
-    echo ">>> NVIDIA paketleri hold ediliyor..."
+    echo ">>> Paketler hold ediliyor..."
     apt-mark hold "${NVIDIA_PACKAGES[@]}"
 
-    echo ""
-    echo ">>> NVIDIA kurulumu tamamlandı!"
-    echo "Sistemi yeniden başlatmanız önerilir:"
-    echo "    sudo reboot"
+    echo "======================================================="
+    echo " NVIDIA kurulumu tamamlandı!"
+    echo " Reboot sonrası aktif olacaktır."
+    echo "======================================================="
 }
 
-# ---------------------------------------------------
-# NVIDIA kaldır
-# ---------------------------------------------------
+# REMOVE NVIDIA DRIVER
 remove_nvidia() {
-    echo "=========================================="
-    echo "     NVIDIA SÜRÜCÜLERİ KALDIRILIYOR"
-    echo "=========================================="
-
     apt-mark unhold "${NVIDIA_PACKAGES[@]}" || true
     apt remove --purge -y "${NVIDIA_PACKAGES[@]}" || true
     apt autoremove -y
 
     enable_nouveau
 
-    echo ">>> NVIDIA kaldırıldı. Reboot önerilir."
+    echo ">>> NVIDIA tamamen kaldırıldı. Reboot önerilir."
 }
 
-# ---------------------------------------------------
-# NVIDIA PRIME Mod değiştir
-# ---------------------------------------------------
+# Performance mode
 set_performance() {
-    echo ">>> PRIME Performance mode etkinleştiriliyor..."
     prime-select nvidia
-    echo ">>> Reboot sonrası aktif olur."
+    echo ">>> Performance mode aktif olacak (reboot sonrası)"
 }
 
+# On-demand mode
 set_on_demand() {
-    echo ">>> PRIME On-Demand mode etkinleştiriliyor..."
     prime-select on-demand
-    echo ">>> Reboot sonrası aktif olur."
+    echo ">>> On-demand mode aktif olacak (reboot sonrası)"
 }
 
-# ---------------------------------------------------
-# İşlemleri çalıştır
-# ---------------------------------------------------
+# EXECUTION
+$PREPARE && { disable_nouveau; echo ">>> Şimdi reboot et ve ardından '--install' çalıştır."; exit 0; }
 $INSTALL && install_nvidia
 $REMOVE && remove_nvidia
 $SET_PERFORMANCE && set_performance
